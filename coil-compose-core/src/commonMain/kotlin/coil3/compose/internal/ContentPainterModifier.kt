@@ -41,6 +41,7 @@ import coil3.compose.AsyncImagePainter.Input
 import coil3.compose.AsyncImagePainter.State
 import coil3.compose.AsyncImagePreviewHandler
 import coil3.compose.ConstraintsSizeResolver
+import coil3.compose.CrossfadePainter
 import coil3.compose.SubcomposeAsyncImage
 import coil3.compose.SubcomposeAsyncImageContent
 import coil3.request.ImageRequest
@@ -366,11 +367,17 @@ internal abstract class AbstractContentPainterNode(
             return dstSize
         }
 
+//        println("BT>> calculateScaledSize::intrinsicSize=$intrinsicSize")
+        //intrinsicSize=Size(720.0, 1280.0) 잘됨
+        //intrinsicSize=Size(1125.0, 2436.0) 안됨
         val srcSize = Size(
             width = intrinsicSize.width.takeOrElse { dstSize.width },
             height = intrinsicSize.height.takeOrElse { dstSize.height },
         )
         val scaleFactor = contentScale.computeScaleFactor(srcSize, dstSize)
+//        println("BT>> calculateScaledSize::srcSize=$srcSize, dstSize=$dstSize, scaleFactor=$scaleFactor")
+        //calculateScaledSize::srcSize=Size(720.0, 1280.0), dstSize=Size(1440.0, 2560.0), scaleFactor=ScaleFactor(2.0, 2.0) 잘됨
+        //calculateScaledSize::srcSize=Size(1125.0, 2436.0), dstSize=Size(1440.0, 2560.0), scaleFactor=ScaleFactor(1.0509031, 1.0509031) 안됨
         if (!scaleFactor.scaleX.isFinite() || !scaleFactor.scaleY.isFinite()) {
             return dstSize
         }
@@ -379,6 +386,7 @@ internal abstract class AbstractContentPainterNode(
     }
 
     private fun modifyConstraints(constraints: Constraints): Constraints {
+//        println("BT>> modifyConstraints::${constraints}")
         // The constraints are a fixed pixel value that can't be modified.
         val hasFixedWidth = constraints.hasFixedWidth
         val hasFixedHeight = constraints.hasFixedHeight
@@ -425,8 +433,11 @@ internal abstract class AbstractContentPainterNode(
             }
         }
 
+//        println("BT>> modifyConstraints::dstWidth=$dstWidth, dstHeight=$dstHeight")
+
         // Scale the source dimensions into the destination dimensions and update the constraints.
         val (scaledWidth, scaledHeight) = calculateScaledSize(Size(dstWidth, dstHeight))
+//        println("BT>> modifyConstraints::scaledWidth=$scaledWidth, scaledHeight=$scaledHeight")
         return constraints.copy(
             minWidth = constraints.constrainWidth(scaledWidth.roundToInt()),
             minHeight = constraints.constrainHeight(scaledHeight.roundToInt()),
@@ -448,6 +459,9 @@ internal abstract class AbstractContentPainterNode(
             translate(dx.toFloat(), dy.toFloat())
         }) {
             with(painter) {
+//                println("BT>> draw::scaledSize=$scaledSize")
+                //scaledSize=Size(1440.0, 2560.0) // 잘되는거
+                //scaledSize=Size(1182.3, 2560.0) // 안되는거
                 draw(scaledSize, alpha, colorFilter)
             }
         }

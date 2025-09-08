@@ -22,6 +22,7 @@ import coil3.network.internal.requireBody
 import coil3.network.internal.singleParameterLazy
 import coil3.request.Options
 import coil3.util.MimeTypeMap
+import kotlinx.coroutines.delay
 import okio.Buffer
 import okio.FileSystem
 import okio.IOException
@@ -77,6 +78,7 @@ class NetworkFetcher(
 
             // Slow path: fetch the image from the network.
             val networkRequest = readResult?.request ?: newRequest()
+            delay(1000)
             var fetchResult = networkClient.value.executeRequest(networkRequest) { networkResponse ->
                 // Write the response to the disk cache then open a new snapshot.
                 snapshot = writeToDiskCache(snapshot, cacheResponse, networkRequest, networkResponse)

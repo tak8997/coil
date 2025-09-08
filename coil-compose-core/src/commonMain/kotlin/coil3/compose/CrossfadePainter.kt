@@ -59,7 +59,12 @@ class CrossfadePainter(
 
     override val intrinsicSize: Size = computeIntrinsicSize(start, end)
 
+    init {
+        println("BT>> CrossfadePainter init:${hashCode()}")
+    }
+
     override fun DrawScope.onDraw() {
+//        println("BT>> onDraw: $isDone")
         if (isDone) {
             drawPainter(end, maxAlpha)
             return
@@ -99,6 +104,19 @@ class CrossfadePainter(
 
         val isStartSpecified = startSize.isSpecified
         val isEndSpecified = endSize.isSpecified
+
+        //intrinsicSize가 srcSize가 됨
+
+//        println("BT>> computeIntrinsicSize::startSize=$startSize, endSize=$endSize, isStartSpecified=$isStartSpecified, isEndSpecified=$isEndSpecified")
+
+//        if (isEndSpecified) {
+//            return endSize
+//        }
+//
+//        if (isStartSpecified) {
+//            return startSize
+//        }
+
         if (isStartSpecified && isEndSpecified) {
             return Size(
                 width = maxOf(startSize.width, endSize.width),
@@ -126,6 +144,7 @@ class CrossfadePainter(
                     horizontal = (size.width - drawSize.width) / 2,
                     vertical = (size.height - drawSize.height) / 2,
                 ) {
+//                    println("BT>> drawPainter->draw")
                     draw(drawSize, alpha, colorFilter)
                 }
             }
@@ -133,8 +152,11 @@ class CrossfadePainter(
     }
 
     private fun computeDrawSize(srcSize: Size, dstSize: Size): Size {
+//        println("BT>> computeDrawSize::srcSize=$srcSize dstSize=$dstSize")
         if (srcSize.isUnspecified || srcSize.isEmpty()) return dstSize
         if (dstSize.isUnspecified || dstSize.isEmpty()) return dstSize
         return srcSize * contentScale.computeScaleFactor(srcSize, dstSize)
     }
+    //computeDrawSize::srcSize=Size(720.0, 1280.0) dstSize=Size(1440.0, 2560.0) // 잘되는거
+    //computeDrawSize::srcSize=Size(720.0, 1280.0) dstSize=Size(1182.3, 2560.0) // 안되는거
 }

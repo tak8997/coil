@@ -31,7 +31,7 @@ private class RealMainViewModel(
     private val _images: MutableStateFlow<List<Image>> = MutableStateFlow(emptyList())
     override val images: StateFlow<List<Image>> get() = _images
     override val assetType: MutableStateFlow<AssetType> = MutableStateFlow(AssetType.JPG)
-    override val screen: MutableStateFlow<Screen> = MutableStateFlow(Screen.List)
+    override val screen: MutableStateFlow<Screen> = MutableStateFlow(Screen.Detail())
 
     override suspend fun start() {
         assetType.collect { assetType ->

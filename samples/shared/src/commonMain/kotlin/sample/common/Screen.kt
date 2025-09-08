@@ -7,7 +7,7 @@ sealed interface Screen {
     data object List : Screen
 
     data class Detail(
-        val image: Image,
+        val image: Image? = null,
         val placeholder: MemoryCache.Key? = null,
     ) : Screen
 }
