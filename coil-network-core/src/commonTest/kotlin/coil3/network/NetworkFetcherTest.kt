@@ -11,6 +11,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import okio.Buffer
 import okio.ByteString.Companion.toByteString
 import okio.fakefilesystem.FakeFileSystem
@@ -198,6 +203,140 @@ class NetworkFetcherTest : RobolectricTest() {
 
         diskCache.shutdown()
         fileSystem.checkNoOpenFiles()
+    }
+
+    @Test
+    fun concurrentRequestsAreMerged() = runTestAsync {
+        val url = "https://example.com/image.jpg"
+        val options = Options(context)
+        val networkClient = FakeNetworkClient {
+            // Add a small delay to ensure the concurrent requests have time to queue up.
+            kotlinx.coroutines.delay(100)
+            NetworkResponse(
+                body = NetworkResponseBody(
+                    source = Buffer().apply { write(ByteArray(1000)) },
+                ),
+            )
+        }
+        val fetcher = NetworkFetcher(
+            url = url,
+            options = options,
+            networkClient = lazyOf(networkClient),
+            diskCache = lazyOf(null),
+            cacheStrategy = lazyOf(CacheStrategy.DEFAULT),
+            connectivityChecker = ConnectivityChecker(context),
+        )
+
+        // Launch 10 concurrent fetch requests.
+        val jobs = List(10) {
+            async { fetcher.fetch() }
+        }
+        val results = jobs.awaitAll()
+
+        // All results should be the same instance.
+        val firstResult = results.first()
+        results.forEach {
+            assertIs<SourceFetchResult>(it)
+            assertTrue(firstResult === it)
+        }
+
+        // The network client should have only received one request.
+        assertEquals(1, networkClient.requests.size)
+    }
+
+    @Test
+    fun concurrentRequestsAreMergedWhenRequestFails() = runTestAsync {
+        val url = "https://example.com/image.jpg"
+        val options = Options(context)
+        val exception = RuntimeException("test")
+        val networkClient = FakeNetworkClient {
+            // Add a small delay to ensure the concurrent requests have time to queue up.
+            kotlinx.coroutines.delay(100)
+            throw exception
+        }
+        val fetcher = NetworkFetcher(
+            url = url,
+            options = options,
+            networkClient = lazyOf(networkClient),
+            diskCache = lazyOf(null),
+            cacheStrategy = lazyOf(CacheStrategy.DEFAULT),
+            connectivityChecker = ConnectivityChecker(context),
+        )
+
+        // Launch 10 concurrent fetch requests.
+        val jobs = List(10) {
+            async {
+                try {
+                    assertFailsWith<RuntimeException> {
+                        fetcher.fetch()
+                    }
+                } catch (ex: Exception) {
+                    assertTrue(ex === exception)
+                }
+            }
+        }
+        jobs.awaitAll()
+
+        // The network client should have only received one request.
+        assertEquals(1, networkClient.requests.size)
+    }
+
+    @Test
+    fun concurrentRequestsCompleteWhenSomeAreCancelled() = runTestAsync {
+        val url = "https://example.com/image.jpg"
+        val options = Options(context)
+//        val networkRequestStarted = CompletableDeferred<Unit>()
+        val networkClient = FakeNetworkClient {
+//            networkRequestStarted.complete(Unit)
+            // Add a delay to ensure cancellation occurs before completion.
+            kotlinx.coroutines.delay(200)
+            NetworkResponse(
+                body = NetworkResponseBody(
+                    source = Buffer().apply { write(ByteArray(1000)) },
+                ),
+            )
+        }
+        val fetcher = NetworkFetcher(
+            url = url,
+            options = options,
+            networkClient = lazyOf(networkClient),
+            diskCache = lazyOf(null),
+            cacheStrategy = lazyOf(CacheStrategy.DEFAULT),
+            connectivityChecker = ConnectivityChecker(context),
+        )
+
+        // Launch the worker job and wait for it to begin the network request.
+        // This ensures the worker is not among the jobs that are cancelled.
+        val workerJob = async { fetcher.fetch() }
+//        networkRequestStarted.await()
+
+        // Launch subsequent jobs that will wait for the worker.
+        val waitingJobs = List(10) {
+            async { fetcher.fetch() }
+        }
+
+        // Cancel half of the waiting jobs.
+        val jobsToCancel = waitingJobs.take(5)
+        val remainingJobs = waitingJobs.drop(5)
+        jobsToCancel.forEach { it.cancel() }
+
+        // Verify that the cancelled jobs failed with CancellationException.
+        for (job in jobsToCancel) {
+            assertFailsWith<CancellationException> {
+                job.await()
+            }
+        }
+
+        // Verify that the remaining jobs and the original worker job completed successfully.
+        val results = (remainingJobs + workerJob).awaitAll()
+        val firstResult = results.first()
+        results.forEach {
+            assertIs<SourceFetchResult>(it)
+            assertTrue(firstResult === it)
+        }
+
+        // The network client should have still only received one request.
+        assertEquals(1, networkClient.requests.size)
     }
 
     class FakeNetworkClient(
