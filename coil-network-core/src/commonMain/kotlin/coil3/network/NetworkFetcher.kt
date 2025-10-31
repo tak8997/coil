@@ -22,6 +22,11 @@ import coil3.network.internal.requireBody
 import coil3.network.internal.singleParameterLazy
 import coil3.request.Options
 import coil3.util.MimeTypeMap
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.withLock
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
+
 import okio.Buffer
 import okio.FileSystem
 import okio.IOException
@@ -38,7 +43,39 @@ class NetworkFetcher(
     private val connectivityChecker: ConnectivityChecker,
 ) : Fetcher {
 
+    private val pendingRequests = HashMap<String, CompletableDeferred<FetchResult>>()
+    private val mutex = kotlinx.coroutines.sync.Mutex()
+    private fun generateRequestKey(url: String, options: Options): String {
+        // This key should uniquely identify a network request for merging purposes.
+        // It includes the URL and relevant headers that affect the network response.
+        // For simplicity, we'll use a basic concatenation. A more robust solution
+        // might involve hashing or a more structured key.
+        val headers = options.httpHeaders.asMap()
+            .flatMap { (name, values) -> values.map { value -> name to value } }
+            .sortedBy { it.first }
+            .joinToString(separator = "|") { "${it.first}:${it.second}" }
+        return "$url|$headers"
+    }
+
     override suspend fun fetch(): FetchResult {
+        val requestKey = generateRequestKey(url, options)
+        val newDeferred = CompletableDeferred<FetchResult>()
+        val existingDeferred = mutex.withLock {
+            val existing = pendingRequests[requestKey]
+            if (existing == null) {
+                pendingRequests[requestKey] = newDeferred
+                null // Indicate that no existing deferred was found
+            } else {
+                existing // Return the existing deferred
+            }
+        }
+
+        // If there's an existing deferred, await its result.
+        if (existingDeferred != null) {
+            return existingDeferred.await()
+        }
+
+        // If we put the newDeferred, we are responsible for completing it.
         var snapshot = readFromDiskCache()
         try {
             // Fast path: fetch the image from the disk cache without performing a network request.
@@ -48,11 +85,13 @@ class NetworkFetcher(
                 // Always return files with empty metadata as it's likely they've been written
                 // to the disk cache manually.
                 if (fileSystem.metadata(snapshot.metadata).size == 0L) {
-                    return SourceFetchResult(
+                    val result = SourceFetchResult(
                         source = snapshot.toImageSource(),
                         mimeType = getMimeType(url, null),
                         dataSource = DataSource.DISK,
                     )
+                    newDeferred.complete(result)
+                    return result
                 }
 
                 // Return the image from the disk cache if the cache strategy agrees.
@@ -62,11 +101,13 @@ class NetworkFetcher(
 
                     readResult = cacheStrategy.value.read(cacheResponse, newRequest(), options)
                     if (readResult.response != null) {
-                        return SourceFetchResult(
+                        val result = SourceFetchResult(
                             source = snapshot.toImageSource(),
                             mimeType = getMimeType(url, readResult.response.headers[CONTENT_TYPE]),
                             dataSource = DataSource.DISK,
                         )
+                        newDeferred.complete(result)
+                        return result
                     }
                 }
             }
@@ -87,21 +128,25 @@ class NetworkFetcher(
 
                 if (snapshot != null) {
                     cacheResponse = snapshot!!.toNetworkResponseOrNull()
-                    return@executeRequest SourceFetchResult(
+                    val result = SourceFetchResult(
                         source = snapshot!!.toImageSource(),
                         mimeType = getMimeType(url, cacheResponse?.headers?.get(CONTENT_TYPE)),
                         dataSource = DataSource.NETWORK,
                     )
+                    newDeferred.complete(result)
+                    return@executeRequest result
                 }
 
                 // If we failed to read a new snapshot then read the response body if it's not empty.
                 val responseBody = networkResponse.requireBody().readBuffer()
                 if (responseBody.size > 0) {
-                    return@executeRequest SourceFetchResult(
+                    val result = SourceFetchResult(
                         source = responseBody.toImageSource(),
                         mimeType = getMimeType(url, networkResponse.headers[CONTENT_TYPE]),
                         dataSource = DataSource.NETWORK,
                     )
+                    newDeferred.complete(result)
+                    return@executeRequest result
                 }
 
                 return@executeRequest null
@@ -111,18 +156,28 @@ class NetworkFetcher(
             // cache headers.
             if (fetchResult == null) {
                 fetchResult = networkClient.value.executeRequest(newRequest()) { response ->
-                    SourceFetchResult(
+                    val result = SourceFetchResult(
                         source = response.requireBody().toImageSource(),
                         mimeType = getMimeType(url, response.headers[CONTENT_TYPE]),
                         dataSource = DataSource.NETWORK,
                     )
+                    newDeferred.complete(result)
+                    return@executeRequest result
                 }
             }
 
             return fetchResult
         } catch (e: Exception) {
             snapshot?.closeQuietly()
+            newDeferred.completeExceptionally(e) // Complete with exception on error
             throw e
+        } finally {
+            // Ensure the deferred is removed from the map after completion
+            mutex.withLock {
+                if (pendingRequests[requestKey] === newDeferred) { // Check if it's the same deferred object
+                    pendingRequests.remove(requestKey)
+                }
+            }
         }
     }
 
